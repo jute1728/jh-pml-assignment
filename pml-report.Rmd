@@ -1,0 +1,240 @@
+---
+title: "Predicting Weight Lifting Classes"
+author: "Johnny Edwards"
+date: "November 22, 2015"
+output: html_document
+---
+
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+
+
+## Goal
+
+An exception is the data available at this website
+http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+ Here 6 volounteers were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+The  data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants were recorded as well as the correct or incorrect way of lifting.
+
+The goal of this project is to show that it is possible to predict the type of lifting (the 'classe') from the data from the accelerometers.
+
+
+## Model selection
+
+Tree based models are  good at performing this type of analysis. A simple binary tree would be the most interpretable. However,  the goal is to achieve good predictive power so I decided that I would use a random forest model. This has a very good reputation at solving these types of problems and there are many good out the the box libraries available.
+
+I will estimate the out of sample error rate using a validation set and  stick with the random forest model if this seems good enough to predict the 20 unknown samples.
+
+
+## Libraries used 
+
+The machine learning is done using R and the following libraries.
+
+```{r, echo=FALSE}
+set.seed(111111)
+```
+
+```{r, echo=TRUE}
+library(ggplot2,      quietly=TRUE, warn.conflicts = FALSE)
+library(caret,          quietly=TRUE, warn.conflicts = FALSE)
+library(randomForest,   quietly=TRUE, warn.conflicts = FALSE)
+```
+
+
+
+## Getting the data
+
+The training and testing data ('pml-training.csv' and 'pml-testing.csv') for this project were downloaded from the following locations.
+
+- https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+- https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+
+After downloading the data we read it in as follows.
+
+
+```{r}
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+```
+
+These are the dimensions of the data sets.
+```{r}
+dim(training)
+dim(testing)
+```
+
+## Cleaning and choosing features
+
+The first task is to tidy up the data and to identify the features that we will use for predicting the class.
+
+I performed the following cleaning.
+
+
+- I first deleted an indexing column 'x' . This was an index variable. It would only confuse any machine learning algorithm as it has no connection with the testing variable of the same name.
+
+- I then deleted all columns from the training data that were hardly used (missing from 97% or more of the observations). 
+
+- I finally deleted the name of the weight-lifter and timestamps of the measurements. They would not be available in any production version of the algorithm. I therefore considered it  in the spirit of the assignment to exclude them (although strictly speaking they were allowed). 
+
+
+```{r, echo=FALSE}
+##
+## Author : Michael Szczepaniak
+##
+## Creates a data frame with three columns: index, ColumnName and
+## FractionMissing.
+## index is the column index in df corresponding to ColumnName
+## ColumnName is as the name implies: the name the column in df
+## FractionMissing is the fraction of values that are missing or NA.
+## The closer this value is to 1, the less data the column contains
+getFractionMissing <- function(df = rawActitivity) {
+    colCount <- ncol(df)
+    returnDf <- data.frame(index=1:ncol(df),
+                           columnName=rep("undefined", colCount),
+                           FractionMissing=rep(-1, colCount),
+                           stringsAsFactors=FALSE)
+    for(i in 1:colCount) {
+        colVector <- df[,i]
+        missingCount <- length(which(colVector == "") * 1)
+        missingCount <- missingCount + sum(is.na(colVector) * 1)
+        returnDf$columnName[i] <- as.character(names(df)[i])
+        returnDf$FractionMissing[i] <- missingCount / length(colVector)
+    }
+    
+    return(returnDf)
+}
+
+
+
+# Remove columns that are (>97%) missing from the training set.
+# This are unlikely to help much.
+# In fact they are 100% missing from the test set so will
+# definitely not help in the assignment submission.
+
+training.missing=getFractionMissing(training)
+training.unused.cols=subset(training.missing,FractionMissing>0.97)$index
+
+training=training[,-training.unused.cols]
+testing=testing[,-training.unused.cols]
+
+
+# Also remove 'x' unrelated to 'x' in the test set
+# and any name and timestamp information that would no
+# be available to a production version of the algorithm
+
+lab.columns.names<-c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window" )
+lab.columns<-which(names(training) %in% lab.columns.names )
+
+training=training[,-lab.columns]
+testing=testing[,-lab.columns]
+```
+
+This leaves the following 52 predictor variables plus the predictor variable 'classe; in the training set.
+```{r}
+names(training)
+```
+
+I did not perform any transformations on the data as these are not usually needed for tree-based algorithms.
+
+
+## Splitting the training data
+
+I then split the training data (70/30) into a training set and cross validation set. The latter would be used to evaluate a model that is trained using the training data.
+
+```{r}
+inTrain <- createDataPartition(training$classe, p = .7, list = FALSE)
+trainMod <- training[inTrain,]
+validMod <- training[-inTrain,]
+```
+
+These are the dimensions now.
+
+```{r}
+dim(trainMod)
+dim(validMod)
+```
+
+
+##  Model training 
+
+I trained a random forest model using the training data.
+I used cv with 3 folds to speed up the computation.
+In fact, experimentation showed  that it was just as  accurate as the more time consuming default options (bootstrap resampling with 25 repetitions). 
+
+```{r, cache=TRUE}
+mytrControl <- trainControl(method = "cv", number = 3)
+system.time(
+    trainRF <- train(classe~., data=trainMod, method="rf",
+                     trControl=mytrControl)
+)
+```
+
+This is the summary of the Random Forest. It includes its own OOB (out of bag) estimate of the accuracy.
+
+```{r}
+print(trainRF)
+```
+
+
+
+##  Cross validation and expected out of sample error
+
+We have kept back our own validation set to perform an
+ independent estimate of the model's accuracy. We ask the model to predict the outcome on the validation set:
+
+```{r}
+pred.valid.RF<-predict(trainRF, validMod)
+```
+
+We place this information in a  confusion matrix. This  summarizes
+how the model did on the 
+validation set. We also output the accuracy  (= #good predictions/ #predictions). This is a good measure of the prediction quality as the outcomes are fairly evenly spread over the 5 classes.
+
+
+
+```{r}
+confuse.RF  <-confusionMatrix(pred.valid.RF, validMod$classe)
+confuse.RF$table
+confuse.RF$overall["Accuracy"]
+```
+
+We therefore estimate the out of sample error at 99.40%.
+This is very good and actually better than the 98.83% OOB estimate generated during the training phase.
+
+We are interested in whether  the model will make a good stab at the test data. We are in fact 88.7% confident that the model will get all the test observations correct (as p^20=0.887, where p=0.994).
+
+
+
+## Test set predictions
+
+The final step is to make the predictions on the test data. Here they are.
+
+```{r}
+answer <-predict(trainRF, testing)
+print(answer)
+```
+
+This is the  correct result for  all 20 observations!
+
+
+## Appendix - Important variables
+
+One nice feature of the random forest is that it is able to indicate the importance of the predictor variables in the model. Here are the top 20.
+
+
+```{r}
+varImp(trainRF)
+```
+
+For instance, the following plot demonstates the potential of the roll and pitch of the belt in predicting the classe. With 52 such 
+predictors 
+there is a very good chance of predicting the correct class with 
+high likelihood. This was verified in this assignment!
+
+```{r, echo=FALSE}
+qplot(roll_belt, pitch_belt, color=classe, data=trainMod)
+```
